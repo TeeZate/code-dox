@@ -19,6 +19,7 @@ from django.views.decorators.csrf import ensure_csrf_cookie
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework import status
+from .utils import EnhancedDocumentationGenerator
 
 # Authentication Views
 
@@ -228,16 +229,18 @@ class CodeRepositoryViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
     
+    def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.doc_generator = EnhancedDocumentationGenerator()
+        
     @action(detail=True, methods=['post'])
     def generate_documentation(self, request, pk=None):
         """
-        Generate documentation for all files in the repository.
-        This will analyze code files and create or update documentation records.
+        Generate enhanced documentation for all files in the repository.
+        Includes implementation explanations and summaries.
         """
         try:
             repository = self.get_object()
-            
-            # Get all code files for this repository
             files = CodeFile.objects.filter(repository=repository)
             
             if not files.exists():
@@ -246,51 +249,36 @@ class CodeRepositoryViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST
                 )
             
-            # Track progress
-            total_files = files.count()
-            processed_files = 0
-            documented_files = 0
-            skipped_files = 0
-            
+            results = []
             for file in files:
-                processed_files += 1
-                
-                # Skip files without content or binary files
                 if not file.content or file.is_binary:
-                    skipped_files += 1
                     continue
                 
-                # Get file extension to determine language
-                _, ext = os.path.splitext(file.path)
-                file_type = ext.lstrip('.').lower() if ext else ''
-                
-                # Generate documentation based on file type
-                doc_content = self.extract_documentation(file.content, file_type)
-                
-                # Create or update documentation record
-                doc, created = Documentation.objects.update_or_create(
-                    file=file,
-                    defaults={'content': json.dumps(doc_content)}
+                # Generate enhanced documentation
+                enhanced_doc = self.doc_generator.generate_file_summary(
+                    content=file.content,
+                    file_type=file.file_type,
+                    file_path=file.path
                 )
                 
-                documented_files += 1
+                # Save to database
+                doc, created = Documentation.objects.update_or_create(
+                    file=file,
+                    defaults={'content': json.dumps(enhanced_doc)}
+                )
                 
-                # Update progress every 10 files
-                if processed_files % 10 == 0:
-                    print(f"Processed {processed_files}/{total_files} files")
+                results.append({
+                    'file_id': file.id,
+                    'file_name': file.name,
+                    'summary': enhanced_doc.get('summary', ''),
+                    'purpose': enhanced_doc.get('purpose', '')
+                })
             
             return Response({
-                "success": f"Documentation generated for {documented_files} files",
-                "total_files": total_files,
-                "documented_files": documented_files,
-                "skipped_files": skipped_files
+                "success": f"Enhanced documentation generated for {len(results)} files",
+                "results": results
             })
             
-        except CodeRepository.DoesNotExist:
-            return Response(
-                {"error": "Repository not found"}, 
-                status=status.HTTP_404_NOT_FOUND
-            )
         except Exception as e:
             return Response(
                 {"error": f"Failed to generate documentation: {str(e)}"}, 
